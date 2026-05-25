@@ -3,29 +3,22 @@ import os
 import asyncio
 import subprocess
 import random
-import threading
-import gc
 from datetime import datetime
-from http.server import SimpleHTTPRequestHandler, HTTPServer
 from telegram import Update, LinkPreviewOptions
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
-# ==========================================
-# 1. BOT TOKEN & GROUP E CONFIGURATION
-# ==========================================
+# 1. Yahan apna bot token dalein
 BOT_TOKEN = "8648804848:AAEan3eszk6OWONAD4IAdN71XQ2PCS5Iu38"
-GROUP_E_CHAT_ID = -1003938588965  
 
-# ==========================================
-# 2. MAIN GROUPS CONFIGURATION (600 LIMIT)
-# ==========================================
+# 2. CONFIGURATION: Charo groups ki IDs aur Limits (600 each)
 GROUPS_CONFIG = {
-    "A": {"name": "Group A", "chat_id": -1003810828255, "limit": 600},  
-    "B": {"name": "Group B (Strict Adult Filter)", "chat_id": -1003791464998, "limit": 600},  
-    "C": {"name": "Group C", "chat_id": -1003934725687, "limit": 600},  
-    "D": {"name": "Group D", "chat_id": -1003934725687, "limit": 600}   
+    "A": {"name": "Group A", "chat_id": -1003810828255, "limit": 600},
+    "B": {"name": "Group B (Strict Adult Filter)", "chat_id": -1003791464998, "limit": 600},
+    "C": {"name": "Group C", "chat_id": -1003956008527, "limit": 600},
+    "D": {"name": "Group D", "chat_id": -1003934725687, "limit": 600}
 }
 
+# 🌟 TARGET WEBSITES BLOCKLIST
 TARGET_BLOCKLIST = [
     "xhamster.com", "xhamster45.desi", "xhamster2.com", "xhamster.desi",          
     "freepornvideo.sex", "aagmaal.dog", "xhopen.com", "beeg.porn", "desixx.net",
@@ -34,24 +27,12 @@ TARGET_BLOCKLIST = [
 
 DB_FILE = "posted_text_strict_filter.txt"
 LINK_REGEX = re.compile(r'(https?://[^\s]+)')
-MONITORED_CHAT_IDS = [g["chat_id"] for g in GROUPS_CONFIG.values()]
-
-def run_render_port_server():
-    port = int(os.environ.get("PORT", 10000))
-    try:
-        server = HTTPServer(('0.0.0.0', port), SimpleHTTPRequestHandler)
-        server.serve_forever()
-    except Exception:
-        pass
 
 def get_posted_data():
     if not os.path.exists(DB_FILE): return set()
     with open(DB_FILE, "r", encoding="utf-8") as f:
         return set(line.strip() for line in f)
 
-# ==========================================
-# 3. CUSTOM MULTI-LAYOUT GENERATOR
-# ==========================================
 def generate_custom_layout(group_key, title, count, link, date, data_size_val, social_link):
     if group_key == "A":
         layout = (
@@ -89,147 +70,106 @@ def generate_custom_layout(group_key, title, count, link, date, data_size_val, s
             f"🔥 <b>Date :-</b> {date}\n"
             f"💥 <b>Data size :-</b> {data_size_val}"
         )
-        
+    
+    # Social/Join link append karne ke liye
     if social_link:
-        layout += f"\n\n<b>Joined. :-</b> {social_link}"
+        layout += f"\n\n✨ <a href='{social_link}'>Join us!</a>"
         
     return layout
 
-# ==========================================
-# 4. HIGH TIMEOUT METADATA & CLEAN TITLE ENGINE
-# ==========================================
-async def get_video_metadata_and_stream(url: str) -> tuple:
+async def download_and_trim_video(url: str, output_filename: str):
+    """Anti-blocking User-Agent rotation ke sath 7-second video preview aur Title extractor"""
     try:
         user_agents = [
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36"
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36"
         ]
-        # ⚡ Timeout ko badha kar 12 second kiya taaki links Group E me skip na ho
+        
+        # Title aur Stream URL dono ek saath fetch karne ke liye formatting string use ki hai
         cmd = [
-            "yt-dlp", "-j", "--no-playlist", "--socket-timeout", "10",
-            "--user-agent", random.choice(user_agents), url
+            "yt-dlp", "--no-playlist", "--socket-timeout", "5",
+            "--prefer-free-formats", "--no-warnings", "--rm-cache-dir",
+            "--user-agent", random.choice(user_agents),
+            "--referer", "https://www.google.com/",
+            "-f", "worst[ext=mp4]/worst", 
+            "--print", "%(title)s\n%(url)s", url
         ]
+        
         process = await asyncio.create_subprocess_exec(*cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         try:
-            stdout, _ = await asyncio.wait_for(process.communicate(), timeout=12.0)
+            stdout, _ = await asyncio.wait_for(process.communicate(), timeout=6.0)
         except asyncio.TimeoutError:
             process.kill()
-            return None, "Premium Video", "N/A"
+            return False, "Exclusive Video"
             
-        if process.returncode != 0:
-            return None, "Premium Video", "N/A"
-            
-        import json
-        data = json.loads(stdout.decode('utf-8'))
-        stream_url = data.get('url', '')
+        output_lines = stdout.decode('utf-8').strip().split('\n')
         
-        # 🔍 DESCRIPTION KO TITLE SE HATANE KA ENGINE
-        raw_title = data.get('title', 'Premium Video')
-        if not raw_title or len(raw_title) > 80 or "\n" in raw_title:
-            raw_title = data.get('fulltitle', 'Premium Video')
+        if len(output_lines) < 2:
+            return False, "Exclusive Video"
             
-        # Agar fir bhi bada text ya description aa raha hai, toh use safe limit me trim karein
-        if len(raw_title) > 45:
-            video_title = raw_title[:42] + "..."
-        else:
-            video_title = raw_title
+        extracted_title = output_lines[0].strip()
+        stream_url = output_lines[1].strip()
+        
+        if not stream_url or "http" not in stream_url:
+            return False, "Exclusive Video"
             
-        bytes_size = data.get('filesize') or data.get('filesize_approx')
-        size_str = "N/A"
-        if bytes_size:
-            mb_size = bytes_size / (1024 * 1024)
-            if mb_size >= 1024:
-                size_str = f"{round(mb_size / 1024, 2)} GB"
-            else:
-                size_str = f"{round(mb_size, 2)} MB"
-                
-        return stream_url, video_title, size_str
-    except Exception:
-        return None, "Premium Video", "N/A"
-
-async def cut_video_clip(stream_url: str, output_filename: str) -> bool:
-    """⚡ INCREASED FFmpeg PROCESSING TIME: For cutting active video clips"""
-    try:
+        # Yahan duration ko badhakar 7 second (-t 7) kar diya gaya hai
         ffmpeg_cmd = [
-            "ffmpeg", "-y", "-threads", "1", "-ss", "00:00:03", "-i", stream_url, "-t", "7",
-            "-c:v", "libx264", "-an", "-preset", "superfast", "-tune", "fastdecode",
+            "ffmpeg", "-y", "-ss", "00:00:05", "-i", stream_url, "-t", "7",
+            "-c:v", "libx264", "-an", "-preset", "ultrafast", "-tune", "fastdecode",
             "-pix_fmt", "yuv420p", output_filename
         ]
+        
         ffmpeg_process = await asyncio.create_subprocess_exec(*ffmpeg_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         try:
-            await asyncio.wait_for(ffmpeg_process.communicate(), timeout=15.0)
+            await asyncio.wait_for(ffmpeg_process.communicate(), timeout=8.0)
         except asyncio.TimeoutError:
             ffmpeg_process.kill()
-            return False
-        return ffmpeg_process.returncode == 0 and os.path.exists(output_filename)
+            return False, extracted_title
+        
+        success = ffmpeg_process.returncode == 0 and os.path.exists(output_filename)
+        return success, extracted_title
     except Exception:
-        return False
+        return False, "Exclusive Video"
 
-# ==========================================
-# 5. ENGINE 1: LIVE GROUP MONITORING
-# ==========================================
-async def monitor_live_group_links(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    message = update.message if update.message else update.channel_post
-    if not message or not message.text: return
-    chat_id = message.chat_id
-    if chat_id in MONITORED_CHAT_IDS:
-        links = LINK_REGEX.findall(message.text)
-        if not links: return
-        posted_database = get_posted_data()
-        for link in links:
-            link = link.strip()
-            if link not in posted_database:
-                try:
-                    await asyncio.sleep(0.2) 
-                    await context.bot.send_message(chat_id=GROUP_E_CHAT_ID, text=f"{link}")
-                    await context.bot.delete_message(chat_id=chat_id, message_id=message.message_id)
-                    break  
-                except Exception as e:
-                    if "FloodControl" in str(e) or "Retry in" in str(e):
-                        await asyncio.sleep(3)
-                    continue
-
-# ==========================================
-# 6. ENGINE 2: AUTOMATED INPUT PROCESSING
-# ==========================================
-async def process_automated_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    message = update.message if update.message else update.channel_post
-    if not message: return
-    links = []
-    joined_caption_link = ""
+async def process_automated_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    file = await context.bot.get_file(update.message.document.file_id)
+    content = await file.download_as_bytearray()
+    links = LINK_REGEX.findall(content.decode('utf-8'))
     
-    if message.document:
-        try:
-            file = await context.bot.get_file(message.document.file_id)
-            content = await file.download_as_bytearray()
-            links = LINK_REGEX.findall(content.decode('utf-8'))
-        except Exception as e:
-            await message.reply_text(f"❌ File Engine Error: {e}")
-            return
-        if message.caption:
-            found_caption_links = LINK_REGEX.findall(message.caption)
-            if found_caption_links:
-                joined_caption_link = found_caption_links[0].strip()
-    elif message.text:
-        links = LINK_REGEX.findall(message.text)
-    if not links: return
+    if not links:
+        await update.message.reply_text("❌ Is file me koi valid links nahi mile!")
+        return
 
-    status_msg = await message.reply_text("⚡ Super Turbo Clipper V3 Engine Active...")
+    join_link = ""
+    if update.message.caption:
+        found_caption_links = LINK_REGEX.findall(update.message.caption)
+        if found_caption_links:
+            join_link = found_caption_links[0].strip()
+
+    status_msg = await update.message.reply_text("🔍 Video-Clip Balanced Strict Filter chalu ho raha hai...")
+    
     posted_database = get_posted_data()
     sent_counts = {"A": 0, "B": 0, "C": 0, "D": 0}
     normal_groups_pool = ["A", "C", "D"]
     pool_index = 0
-    total_processed_counter = 0  
+    
     backup_storage = {"A": [], "B": [], "C": [], "D": []}
 
     for link in links:
         link = link.strip()
-        if not link or link in posted_database: continue
+        if not link or link in posted_database:
+            continue
+
         is_adult_link = any(domain in link.lower() for domain in TARGET_BLOCKLIST)
+
         target_key = None
         if is_adult_link:
-            if sent_counts["B"] < GROUPS_CONFIG["B"]["limit"]: target_key = "B"
-            else: continue
+            if sent_counts["B"] < GROUPS_CONFIG["B"]["limit"]:
+                target_key = "B"
+            else:
+                continue
         else:
             started_index = pool_index
             while pool_index < len(normal_groups_pool):
@@ -240,81 +180,121 @@ async def process_automated_input(update: Update, context: ContextTypes.DEFAULT_
                     break
                 else:
                     pool_index = (pool_index + 1) % len(normal_groups_pool)
-                    if pool_index == started_index: break
-            if not target_key: continue
+                    if pool_index == started_index:
+                        break
+            if not target_key:
+                continue
 
         group = GROUPS_CONFIG[target_key]
         video_filename = f"preview_{int(asyncio.get_event_loop().time())}.mp4"
+
         try:
-            total_processed_counter += 1
-            current_date_str = datetime.now().strftime("%d-%m-%Y")
+            current_count = sent_counts[target_key] + 1
+            current_date = datetime.now().strftime("%d-%m-%Y")
+            data_size = "45 MB" # Placeholder size
             
-            # Fetch stream, clean short title, and data size
-            stream_url, video_title_val, data_size_val = await get_video_metadata_and_stream(link)
+            print(f"🔄 Processing 7s Video Clip for [{group['name']}]: {link}")
+            # Video success ke sath dynamic title fetch ho raha hai
+            video_success, video_title = await download_and_trim_video(link, video_filename)
             
+            # Dinamic extracted title ab layout me auto-pass hoga
             post_format = generate_custom_layout(
-                group_key=target_key, title=video_title_val, count=total_processed_counter, 
-                link=link, date=current_date_str, data_size_val=data_size_val, social_link=joined_caption_link
+                group_key=target_key,
+                title=video_title,
+                count=current_count,
+                link=link,
+                date=current_date,
+                data_size_val=data_size,
+                social_link=join_link
             )
-            
-            video_success = False
-            if stream_url:
-                video_success = await cut_video_clip(stream_url, video_filename)
             
             if video_success:
                 with open(video_filename, "rb") as video_file:
                     await context.bot.send_animation(
-                        chat_id=group["chat_id"], animation=video_file, 
+                        chat_id=group["chat_id"], animation=video_file,
                         caption=post_format, parse_mode="HTML"
                     )
-                if os.path.exists(video_filename): os.remove(video_filename)
-                backup_storage[target_key].append(link)
-                sent_counts[target_key] += 1
+                if os.path.exists(video_filename):
+                    os.remove(video_filename)
             else:
-                # Fallback only for highly broken links
-                fallback_format = (
-                    f"📥 <b>Fallback Direct Link</b>\n━━━━━━━━━━━━━━━━━━\n"
-                    f"🔞 <b>Video :-</b> {video_title_val}\n🛑 <b>Number :-</b> {total_processed_counter}\n"
-                    f"🥵 <b>Link :-</b> {link}\n🔥 <b>Date :-</b> {current_date_str}\n💥 <b>Data size :-</b> {data_size_val}"
+                preview_settings = LinkPreviewOptions(
+                    is_disabled=False, prefer_large_media=True, show_above_text=True 
                 )
-                if joined_caption_link: fallback_format += f"\n\n<b>Joined. :-</b> {joined_caption_link}"
-                preview_settings = LinkPreviewOptions(is_disabled=False, prefer_large_media=True, show_above_text=True)
-                await context.bot.send_message(chat_id=GROUP_E_CHAT_ID, text=fallback_format, parse_mode="HTML", link_preview_options=preview_settings)
+                await context.bot.send_message(
+                    chat_id=group["chat_id"], text=post_format, 
+                    parse_mode="HTML", link_preview_options=preview_settings
+                )
             
-            with open(DB_FILE, "a", encoding="utf-8") as f: f.write(link + "\n")
+            with open(DB_FILE, "a", encoding="utf-8") as f:
+                f.write(link + "\n")
             posted_database.add(link)
             
-            if total_processed_counter % 5 == 0:
+            backup_storage[target_key].append(link)
+            sent_counts[target_key] += 1
+            
+            if sum(sent_counts.values()) % 5 == 0:
                 progress_text = (
-                    f"🔥 <b>Turbo Clipper Live Status:</b>\n\n"
-                    f"Group A: {sent_counts['A']}\n"
-                    f"Group B: {sent_counts['B']}\n"
-                    f"Group C: {sent_counts['C']}\n"
-                    f"Group D: {sent_counts['D']}\n\n"
-                    f"Processed loop counts: {total_processed_counter} links."
+                    f"⏳ <b>Live Status:</b>\n\n"
+                    f"🟢 Group A: {sent_counts['A']}/{GROUPS_CONFIG['A']['limit']}\n"
+                    f"🔴 Group B: {sent_counts['B']}/{GROUPS_CONFIG['B']['limit']}\n"
+                    f"🟢 Group C: {sent_counts['C']}/{GROUPS_CONFIG['C']['limit']}\n"
+                    f"🟢 Group D: {sent_counts['D']}/{GROUPS_CONFIG['D']['limit']}\n\n"
+                    f"📦 Total Processed: {sum(sent_counts.values())} links."
                 )
                 await status_msg.edit_text(progress_text, parse_mode="HTML")
-            gc.collect() 
-            await asyncio.sleep(3.0) # Rate limiting safe buffer
-        except Exception:
-            if os.path.exists(video_filename): os.remove(video_filename)
+            
+            await asyncio.sleep(4.0) # Safe timing intervals anti-blocking ke liye
+            
+        except Exception as e:
+            if os.path.exists(video_filename):
+                os.remove(video_filename)
+            if "Flood" in str(e):
+                await asyncio.sleep(300) 
             continue
-    await message.reply_text("🎉 All tasks finished loop successfully with clean video titles!", parse_mode="HTML")
+
+    await update.message.reply_text("📦 Posts complete! Backup logs generate ho rahe hain...")
+    for key, group_info in GROUPS_CONFIG.items():
+        links_to_save = backup_storage[key]
+        if links_to_save:
+            temp_file_name = f"Group_{key}_Backup_Links.txt"
+            with open(temp_file_name, "w", encoding="utf-8") as f:
+                for b_link in links_to_save:
+                    f.write(b_link + "\n")
+            try:
+                with open(temp_file_name, "rb") as f:
+                    await context.bot.send_document(
+                        chat_id=group_info["chat_id"], document=f,
+                        caption=f"📋 <b>{group_info['name']} Safe Record Backup</b>",
+                        parse_mode="HTML"
+                    )
+            except Exception:
+                pass
+            if os.path.exists(temp_file_name):
+                os.remove(temp_file_name)
+
+    await update.message.reply_text("🎉 All tasks finished successfully!", parse_mode="HTML")
 
 async def run_bot():
+    """Application builder context configuration"""
     app = Application.builder().token(BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start", lambda u, c: u.message.reply_text("👋 Clean Title Clipper Bot Active!")))
-    app.add_handler(MessageHandler(filters.Document.ALL | filters.TEXT, process_automated_input))
-    app.add_handler(MessageHandler(filters.ChatType.GROUPS & filters.TEXT, monitor_live_group_links))
+    app.add_handler(CommandHandler("start", lambda u, c: u.message.reply_text("👋 Video-Preview Balanced Bot Active!")))
+    app.add_handler(MessageHandler(filters.Document.ALL, process_automated_file))
+    
     await app.initialize()
     await app.start()
+    print("🚀 Bot core successfully initialized on Render...")
     await app.updater.start_polling(drop_pending_updates=True)
-    while True: await asyncio.sleep(3600)
+    
+    # Keep running until interrupted
+    while True:
+        await asyncio.sleep(3600)
 
 def main():
-    t = threading.Thread(target=run_render_port_server, daemon=True)
-    t.start()
-    try: asyncio.run(run_bot())
-    except KeyboardInterrupt: pass
+    try:
+        # Render dynamic main loop crash solver
+        asyncio.run(run_bot())
+    except KeyboardInterrupt:
+        print("Bot stopped.")
 
-if __name__ == '__main__': main()
+if __name__ == '__main__':
+    main()
