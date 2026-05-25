@@ -206,7 +206,7 @@ async def process_automated_file(update: Update, context: ContextTypes.DEFAULT_T
                 )
                 await status_msg.edit_text(progress_text, parse_mode="HTML")
             
-            await asyncio.sleep(6.0) # Server safety delay
+            await asyncio.sleep(2.5) # Server safety delay
             
         except Exception as e:
             if os.path.exists(video_filename):
