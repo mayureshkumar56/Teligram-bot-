@@ -233,7 +233,7 @@ async def process_automated_file(update: Update, context: ContextTypes.DEFAULT_T
                 await status_msg.edit_text(progress_text, parse_mode="HTML")
             
             gc.collect() 
-            await asyncio.sleep(8.0) 
+            await asyncio.sleep(2.3) 
             
         except Exception as e:
             if os.path.exists(video_filename):
