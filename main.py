@@ -4,8 +4,8 @@ import asyncio
 import subprocess
 import random
 import threading
-import gc  
-from datetime import datetime  
+import gc  # RAM Auto-Flush Engine
+from datetime import datetime  # Tarikh nikalne ke liye
 from http.server import SimpleHTTPRequestHandler, HTTPServer
 from telegram import Update, LinkPreviewOptions
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
@@ -13,6 +13,7 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 # ==========================================
 # 1. BOT TOKEN & GROUP E CONFIGURATION
 # ==========================================
+# ⚠️ Yahan apna asli Telegram Bot Token daaliye
 BOT_TOKEN = "8648804848:AAF8c1z8IU2v9q80iLEyFbC9bAEwP2fKtgM"
 GROUP_E_CHAT_ID = -1005127775582  
 
@@ -57,9 +58,6 @@ def get_posted_data():
 # 4. CUSTOM MULTI-LAYOUT GENERATOR ENGINE (🥵 = LINK FIXED)
 # ==========================================
 def generate_custom_layout(group_key, title, count, link, date, data_size_val, social_link):
-    """🥵 Emoji ke aage target Link ko strictly set karne wala engine"""
-    
-    # 🌟 Sabhi groups me layout styling alag rahegi par Emojis ke aage data strict rahega
     if group_key == "A":
         layout = (
             f"🔞 <b>Video :-</b> <code>{title}</code>\n"
@@ -97,7 +95,6 @@ def generate_custom_layout(group_key, title, count, link, date, data_size_val, s
             f"💥 <b>Data size :-</b> {data_size_val}"
         )
         
-    # Social media link (Bina kisi emoji ke, pure clean format me)
     if social_link:
         layout += f"\n\n<b>Joined. :-</b> {social_link}"
         
@@ -169,12 +166,13 @@ async def cut_video_clip(stream_url: str, output_filename: str) -> bool:
 # 6. ENGINE 1: LIVE GROUP MONITORING
 # ==========================================
 async def monitor_live_group_links(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message or not update.message.text:
+    message = update.message if update.message else update.channel_post
+    if not message or not message.text:
         return
 
-    chat_id = update.message.chat_id
+    chat_id = message.chat_id
     if chat_id in MONITORED_CHAT_IDS:
-        links = LINK_REGEX.findall(update.message.text)
+        links = LINK_REGEX.findall(message.text)
         if not links:
             return
 
@@ -186,7 +184,7 @@ async def monitor_live_group_links(update: Update, context: ContextTypes.DEFAULT
                 try:
                     await asyncio.sleep(0.2) 
                     await context.bot.send_message(chat_id=GROUP_E_CHAT_ID, text=f"{link}")
-                    await context.bot.delete_message(chat_id=chat_id, message_id=update.message.message_id)
+                    await context.bot.delete_message(chat_id=chat_id, message_id=message.message_id)
                     print(f"♻️ Routed unprocessed link to Group E: {link}")
                     break  
                 except Exception as e:
@@ -195,24 +193,43 @@ async def monitor_live_group_links(update: Update, context: ContextTypes.DEFAULT
                     continue
 
 # ==========================================
-# 7. ENGINE 2: AUTOMATED FILE PROCESSING
+# 7. ENGINE 2: AUTOMATED CONTENT PROCESSING
 # ==========================================
-async def process_automated_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    file = await context.bot.get_file(update.message.document.file_id)
-    content = await file.download_as_bytearray()
-    links = LINK_REGEX.findall(content.decode('utf-8'))
-    
-    if not links:
-        await update.message.reply_text("❌ Is file me koi valid links nahi mile!")
+async def process_automated_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """File, Forwarded File aur Text Base Block Links ko process karne wala Triple Engine"""
+    message = update.message if update.message else update.channel_post
+    if not message:
         return
 
+    links = []
     joined_caption_link = ""
-    if update.message.caption:
-        found_caption_links = LINK_REGEX.findall(update.message.caption)
-        if found_caption_links:
-            joined_caption_link = found_caption_links[0].strip()
 
-    status_msg = await update.message.reply_text("⚡ Turbo Fixed Emoji Engine Active...")
+    # 1. Agar input ek Document file hai (Direct ya Forwarded)
+    if message.document:
+        try:
+            file = await context.bot.get_file(message.document.file_id)
+            content = await file.download_as_bytearray()
+            links = LINK_REGEX.findall(content.decode('utf-8'))
+        except Exception as e:
+            await message.reply_text(f"❌ File Engine Error: {e}")
+            return
+        if message.caption:
+            found_caption_links = LINK_REGEX.findall(message.caption)
+            if found_caption_links:
+                joined_caption_link = found_caption_links[0].strip()
+
+    # 2. Agar input ek standard text message hai jisme links hain
+    elif message.text:
+        links = LINK_REGEX.findall(message.text)
+        # Text block mein agar 1 se zyaada link hain toh aakhri link ko social link maan sakte hain ya blank chhod sakte hain
+        if len(links) > 1:
+            # Safe strategy: Agar user ne text bhejte waqt caption style diya ho
+            pass
+
+    if not links:
+        return  # Agar koi valid link nahi hai toh chupchaap ignore karein
+
+    status_msg = await message.reply_text("⚡ Super Turbo Triple Engine Active...")
     
     posted_database = get_posted_data()
     sent_counts = {"A": 0, "B": 0, "C": 0, "D": 0}
@@ -259,7 +276,6 @@ async def process_automated_file(update: Update, context: ContextTypes.DEFAULT_T
             
             stream_url, video_title_val, data_size_val = await get_video_metadata_and_stream(link)
             
-            # Layout calling
             post_format = generate_custom_layout(
                 group_key=target_key, 
                 title=video_title_val, 
@@ -286,7 +302,6 @@ async def process_automated_file(update: Update, context: ContextTypes.DEFAULT_T
                 backup_storage[target_key].append(link)
                 sent_counts[target_key] += 1
             else:
-                # ⏩ GROUP E FALLBACK FORMAT (🥵 = LINK FIXED HERE TOO)
                 fallback_format = (
                     f"📥 <b>Fallback Direct Link</b>\n"
                     f"━━━━━━━━━━━━━━━━━━\n"
@@ -325,34 +340,12 @@ async def process_automated_file(update: Update, context: ContextTypes.DEFAULT_T
             gc.collect() 
             await asyncio.sleep(2.5) 
             
-        except Exception as e:
+        except Exception:
             if os.path.exists(video_filename):
                 os.remove(video_filename)
-            if "Flood" in str(e) or "Too Many Requests" in str(e):
-                await asyncio.sleep(60) 
             continue
 
-    await update.message.reply_text("📦 Posts complete! Backup logs send ho rahe hain...")
-    for key, group_info in GROUPS_CONFIG.items():
-        links_to_save = backup_storage[key]
-        if links_to_save:
-            temp_file_name = f"Group_{key}_Backup_Links.txt"
-            with open(temp_file_name, "w", encoding="utf-8") as f:
-                for b_link in links_to_save:
-                    f.write(b_link + "\n")
-            try:
-                with open(temp_file_name, "rb") as f:
-                    await context.bot.send_document(
-                        chat_id=group_info["chat_id"], document=f,
-                        caption=f"📋 <b>{group_info['name']} Safe Record Backup</b>",
-                        parse_mode="HTML"
-                    )
-            except Exception:
-                pass
-            if os.path.exists(temp_file_name):
-                os.remove(temp_file_name)
-
-    await update.message.reply_text("🚀 Layout fixed! 🥵 is now perfectly leading the Links.", parse_mode="HTML")
+    await message.reply_text("🎉 All tasks finished loop successfully!", parse_mode="HTML")
 
 # ==========================================
 # 8. LIFECYCLE MANAGEMENT
@@ -360,13 +353,15 @@ async def process_automated_file(update: Update, context: ContextTypes.DEFAULT_T
 async def run_bot():
     app = Application.builder().token(BOT_TOKEN).build()
     
-    app.add_handler(CommandHandler("start", lambda u, c: u.message.reply_text("👋 Layout Fixed Bot Active!")))
-    app.add_handler(MessageHandler(filters.Document.ALL, process_automated_file))
-    app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), monitor_live_group_links))
+    app.add_handler(CommandHandler("start", lambda u, c: u.message.reply_text("👋 Premium All-In-One Turbo Bot Active!")))
+    
+    # 🔥 TRIPLE FILTERS UPGRADE: Handles files, text messages, channels, and forwards strictly!
+    app.add_handler(MessageHandler(filters.Document.ALL | filters.TEXT, process_automated_input))
+    app.add_handler(MessageHandler(filters.ChatType.GROUPS & filters.TEXT, monitor_live_group_links))
     
     await app.initialize()
     await app.start()
-    print("🚀 Fixed Engines Live...")
+    print("🚀 Fixed All-In-One Engines Live...")
     await app.updater.start_polling(drop_pending_updates=True)
     
     while True:
