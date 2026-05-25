@@ -1,0 +1,384 @@
+import re
+import os
+import asyncio
+import subprocess
+import random
+import threading
+import gc  
+from datetime import datetime  
+from http.server import SimpleHTTPRequestHandler, HTTPServer
+from telegram import Update, LinkPreviewOptions
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+
+# ==========================================
+# 1. BOT TOKEN & GROUP E CONFIGURATION
+# ==========================================
+BOT_TOKEN = "8648804848:AAF8c1z8IU2v9q80iLEyFbC9bAEwP2fKtgM"
+GROUP_E_CHAT_ID = -1003938588965  
+
+# ==========================================
+# 2. MAIN GROUPS CONFIGURATION (600 LIMIT)
+# ==========================================
+GROUPS_CONFIG = {
+    "A": {"name": "Group A", "chat_id": -1003810828255, "limit": 600},
+    "B": {"name": "Group B (Strict Adult Filter)", "chat_id": -1003791464998, "limit": 600},
+    "C": {"name": "Group C", "chat_id": -1003956008527, "limit": 600},
+    "D": {"name": "Group D", "chat_id": -1003934725687, "limit": 600}
+}
+
+TARGET_BLOCKLIST = [
+    "xhamster.com", "xhamster45.desi", "xhamster2.com", "xhamster.desi",          
+    "freepornvideo.sex", "aagmaal.dog", "xhopen.com", "beeg.porn", "desixx.net",
+    "wonporn.com", "xxxvideosind.com"
+]
+
+DB_FILE = "posted_text_strict_filter.txt"
+LINK_REGEX = re.compile(r'(https?://[^\s]+)')
+
+MONITORED_CHAT_IDS = [g["chat_id"] for g in GROUPS_CONFIG.values()]
+
+# ==========================================
+# 3. RENDER PORT BINDER
+# ==========================================
+def run_render_port_server():
+    port = int(os.environ.get("PORT", 10000))
+    try:
+        server = HTTPServer(('0.0.0.0', port), SimpleHTTPRequestHandler)
+        server.serve_forever()
+    except Exception:
+        pass
+
+def get_posted_data():
+    if not os.path.exists(DB_FILE): return set()
+    with open(DB_FILE, "r", encoding="utf-8") as f:
+        return set(line.strip() for line in f)
+
+# ==========================================
+# 4. CUSTOM MULTI-LAYOUT GENERATOR ENGINE (🥵 = LINK FIXED)
+# ==========================================
+def generate_custom_layout(group_key, title, count, link, date, data_size_val, social_link):
+    """🥵 Emoji ke aage target Link ko strictly set karne wala engine"""
+    
+    # 🌟 Sabhi groups me layout styling alag rahegi par Emojis ke aage data strict rahega
+    if group_key == "A":
+        layout = (
+            f"🔞 <b>Video :-</b> <code>{title}</code>\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"🛑 <b>Number :-</b> # {count}\n"
+            f"🥵 <b>Link :-</b> {link}\n"
+            f"🔥 <b>Date :-</b> {date}\n"
+            f"💥 <b>Data size :-</b> {data_size_val}"
+        )
+    elif group_key == "B":
+        layout = (
+            f"🔞 <b>Video :-</b> {title}\n"
+            f"🔺━━━━━━━━━━━━━━🔺\n"
+            f"🛑 <b>Number :-</b> [ {count} ]\n"
+            f"🥵 <b>Link :-</b> {link}\n"
+            f"🔥 <b>Date :-</b> {date}\n"
+            f"💥 <b>Data size :-</b> {data_size_val}"
+        )
+    elif group_key == "C":
+        layout = (
+            f"🔞 <b>Video :-</b> {title}\n"
+            f"⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡\n"
+            f"🛑 <b>Number :-</b> {count}\n"
+            f"🥵 <b>Link :-</b> {link}\n"
+            f"🔥 <b>Date :-</b> {date}\n"
+            f"💥 <b>Data size :-</b> {data_size_val}"
+        )
+    else:  # Group D
+        layout = (
+            f"🔞 <b>Video :-</b> {title}\n"
+            f"🔹──────────────🔹\n"
+            f"🛑 <b>Number :-</b> {count}\n"
+            f"🥵 <b>Link :-</b> {link}\n"
+            f"🔥 <b>Date :-</b> {date}\n"
+            f"💥 <b>Data size :-</b> {data_size_val}"
+        )
+        
+    # Social media link (Bina kisi emoji ke, pure clean format me)
+    if social_link:
+        layout += f"\n\n<b>Joined. :-</b> {social_link}"
+        
+    return layout
+
+# ==========================================
+# 5. SUPER FAST VIDEO METADATA & STREAM EXTRACTOR
+# ==========================================
+async def get_video_metadata_and_stream(url: str) -> tuple:
+    try:
+        user_agents = [
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36"
+        ]
+        cmd = [
+            "yt-dlp", "-j", "--no-playlist", "--socket-timeout", "3",
+            "--user-agent", random.choice(user_agents), url
+        ]
+        
+        process = await asyncio.create_subprocess_exec(*cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        try:
+            stdout, _ = await asyncio.wait_for(process.communicate(), timeout=3.5)
+        except asyncio.TimeoutError:
+            process.kill()
+            return None, "Premium Content", "N/A"
+            
+        if process.returncode != 0:
+            return None, "Premium Content", "N/A"
+            
+        import json
+        data = json.loads(stdout.decode('utf-8'))
+        
+        stream_url = data.get('url', '')
+        video_title = data.get('title', 'Premium Content')
+        if len(video_title) > 50:
+            video_title = video_title[:47] + "..."
+            
+        bytes_size = data.get('filesize') or data.get('filesize_approx')
+        size_str = "N/A"
+        if bytes_size:
+            mb_size = bytes_size / (1024 * 1024)
+            if mb_size >= 1024:
+                size_str = f"{round(mb_size / 1024, 2)} GB"
+            else:
+                size_str = f"{round(mb_size, 2)} MB"
+                
+        return stream_url, video_title, size_str
+    except Exception:
+        return None, "Premium Content", "N/A"
+
+async def cut_video_clip(stream_url: str, output_filename: str) -> bool:
+    try:
+        ffmpeg_cmd = [
+            "ffmpeg", "-y", "-threads", "1", "-ss", "00:00:04", "-i", stream_url, "-t", "7",
+            "-c:v", "libx264", "-an", "-preset", "superfast", "-tune", "fastdecode",
+            "-pix_fmt", "yuv420p", output_filename
+        ]
+        ffmpeg_process = await asyncio.create_subprocess_exec(*ffmpeg_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        try:
+            await asyncio.wait_for(ffmpeg_process.communicate(), timeout=6.0)
+        except asyncio.TimeoutError:
+            ffmpeg_process.kill()
+            return False
+        return ffmpeg_process.returncode == 0 and os.path.exists(output_filename)
+    except Exception:
+        return False
+
+# ==========================================
+# 6. ENGINE 1: LIVE GROUP MONITORING
+# ==========================================
+async def monitor_live_group_links(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or not update.message.text:
+        return
+
+    chat_id = update.message.chat_id
+    if chat_id in MONITORED_CHAT_IDS:
+        links = LINK_REGEX.findall(update.message.text)
+        if not links:
+            return
+
+        posted_database = get_posted_data()
+        for link in links:
+            link = link.strip()
+            
+            if link not in posted_database:
+                try:
+                    await asyncio.sleep(0.2) 
+                    await context.bot.send_message(chat_id=GROUP_E_CHAT_ID, text=f"{link}")
+                    await context.bot.delete_message(chat_id=chat_id, message_id=update.message.message_id)
+                    print(f"♻️ Routed unprocessed link to Group E: {link}")
+                    break  
+                except Exception as e:
+                    if "FloodControl" in str(e) or "Retry in" in str(e):
+                        await asyncio.sleep(3)
+                    continue
+
+# ==========================================
+# 7. ENGINE 2: AUTOMATED FILE PROCESSING
+# ==========================================
+async def process_automated_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    file = await context.bot.get_file(update.message.document.file_id)
+    content = await file.download_as_bytearray()
+    links = LINK_REGEX.findall(content.decode('utf-8'))
+    
+    if not links:
+        await update.message.reply_text("❌ Is file me koi valid links nahi mile!")
+        return
+
+    joined_caption_link = ""
+    if update.message.caption:
+        found_caption_links = LINK_REGEX.findall(update.message.caption)
+        if found_caption_links:
+            joined_caption_link = found_caption_links[0].strip()
+
+    status_msg = await update.message.reply_text("⚡ Turbo Fixed Emoji Engine Active...")
+    
+    posted_database = get_posted_data()
+    sent_counts = {"A": 0, "B": 0, "C": 0, "D": 0}
+    normal_groups_pool = ["A", "C", "D"]
+    pool_index = 0
+    total_processed_counter = 0  
+    
+    backup_storage = {"A": [], "B": [], "C": [], "D": []}
+
+    for link in links:
+        link = link.strip()
+        if not link or link in posted_database:
+            continue
+
+        is_adult_link = any(domain in link.lower() for domain in TARGET_BLOCKLIST)
+
+        target_key = None
+        if is_adult_link:
+            if sent_counts["B"] < GROUPS_CONFIG["B"]["limit"]:
+                target_key = "B"
+            else:
+                continue
+        else:
+            started_index = pool_index
+            while pool_index < len(normal_groups_pool):
+                current_pool_key = normal_groups_pool[pool_index]
+                if sent_counts[current_pool_key] < GROUPS_CONFIG[current_pool_key]["limit"]:
+                    target_key = current_pool_key
+                    pool_index = (pool_index + 1) % len(normal_groups_pool)
+                    break
+                else:
+                    pool_index = (pool_index + 1) % len(normal_groups_pool)
+                    if pool_index == started_index:
+                        break
+            if not target_key:
+                continue
+
+        group = GROUPS_CONFIG[target_key]
+        video_filename = f"preview_{int(asyncio.get_event_loop().time())}.mp4"
+
+        try:
+            total_processed_counter += 1
+            current_date_str = datetime.now().strftime("%d-%m-%Y")
+            
+            stream_url, video_title_val, data_size_val = await get_video_metadata_and_stream(link)
+            
+            # Layout calling
+            post_format = generate_custom_layout(
+                group_key=target_key, 
+                title=video_title_val, 
+                count=total_processed_counter, 
+                link=link, 
+                date=current_date_str, 
+                data_size_val=data_size_val,
+                social_link=joined_caption_link
+            )
+
+            video_success = False
+            if stream_url:
+                video_success = await cut_video_clip(stream_url, video_filename)
+            
+            if video_success:
+                with open(video_filename, "rb") as video_file:
+                    await context.bot.send_animation(
+                        chat_id=group["chat_id"], animation=video_file,
+                        caption=post_format, parse_mode="HTML"
+                    )
+                if os.path.exists(video_filename):
+                    os.remove(video_filename)
+                
+                backup_storage[target_key].append(link)
+                sent_counts[target_key] += 1
+            else:
+                # ⏩ GROUP E FALLBACK FORMAT (🥵 = LINK FIXED HERE TOO)
+                fallback_format = (
+                    f"📥 <b>Fallback Direct Link</b>\n"
+                    f"━━━━━━━━━━━━━━━━━━\n"
+                    f"🔞 <b>Video :-</b> {video_title_val}\n"
+                    f"🛑 <b>Number :-</b> {total_processed_counter}\n"
+                    f"🥵 <b>Link :-</b> {link}\n"
+                    f"🔥 <b>Date :-</b> {current_date_str}\n"
+                    f"💥 <b>Data size :-</b> {data_size_val}"
+                )
+                if joined_caption_link:
+                    fallback_format += f"\n\n<b>Joined. :-</b> {joined_caption_link}"
+                    
+                preview_settings = LinkPreviewOptions(
+                    is_disabled=False, prefer_large_media=True, show_above_text=True 
+                )
+                await context.bot.send_message(
+                    chat_id=GROUP_E_CHAT_ID, text=fallback_format, 
+                    parse_mode="HTML", link_preview_options=preview_settings
+                )
+            
+            with open(DB_FILE, "a", encoding="utf-8") as f:
+                f.write(link + "\n")
+            posted_database.add(link)
+            
+            if total_processed_counter % 5 == 0:
+                progress_text = (
+                    f"🔥 <b>Turbo Custom Live Status:</b>\n\n"
+                    f"🌟 Group A: {sent_counts['A']}/{GROUPS_CONFIG['A']['limit']}\n"
+                    f"🔞 Group B: {sent_counts['B']}/{GROUPS_CONFIG['B']['limit']}\n"
+                    f"🚀 Group C: {sent_counts['C']}/{GROUPS_CONFIG['C']['limit']}\n"
+                    f"💎 Group D: {sent_counts['D']}/{GROUPS_CONFIG['D']['limit']}\n\n"
+                    f"📦 Total Processed Loop: {total_processed_counter} links."
+                )
+                await status_msg.edit_text(progress_text, parse_mode="HTML")
+            
+            gc.collect() 
+            await asyncio.sleep(2.5) 
+            
+        except Exception as e:
+            if os.path.exists(video_filename):
+                os.remove(video_filename)
+            if "Flood" in str(e) or "Too Many Requests" in str(e):
+                await asyncio.sleep(60) 
+            continue
+
+    await update.message.reply_text("📦 Posts complete! Backup logs send ho rahe hain...")
+    for key, group_info in GROUPS_CONFIG.items():
+        links_to_save = backup_storage[key]
+        if links_to_save:
+            temp_file_name = f"Group_{key}_Backup_Links.txt"
+            with open(temp_file_name, "w", encoding="utf-8") as f:
+                for b_link in links_to_save:
+                    f.write(b_link + "\n")
+            try:
+                with open(temp_file_name, "rb") as f:
+                    await context.bot.send_document(
+                        chat_id=group_info["chat_id"], document=f,
+                        caption=f"📋 <b>{group_info['name']} Safe Record Backup</b>",
+                        parse_mode="HTML"
+                    )
+            except Exception:
+                pass
+            if os.path.exists(temp_file_name):
+                os.remove(temp_file_name)
+
+    await update.message.reply_text("🚀 Layout fixed! 🥵 is now perfectly leading the Links.", parse_mode="HTML")
+
+# ==========================================
+# 8. LIFECYCLE MANAGEMENT
+# ==========================================
+async def run_bot():
+    app = Application.builder().token(BOT_TOKEN).build()
+    
+    app.add_handler(CommandHandler("start", lambda u, c: u.message.reply_text("👋 Layout Fixed Bot Active!")))
+    app.add_handler(MessageHandler(filters.Document.ALL, process_automated_file))
+    app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), monitor_live_group_links))
+    
+    await app.initialize()
+    await app.start()
+    print("🚀 Fixed Engines Live...")
+    await app.updater.start_polling(drop_pending_updates=True)
+    
+    while True:
+        await asyncio.sleep(3600)
+
+def main():
+    t = threading.Thread(target=run_render_port_server, daemon=True)
+    t.start()
+    try:
+        asyncio.run(run_bot())
+    except KeyboardInterrupt:
+        print("Bot stopped.")
+
+if __name__ == '__main__':
+    main()
