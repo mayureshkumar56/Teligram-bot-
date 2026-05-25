@@ -9,7 +9,7 @@ from telegram import Update, LinkPreviewOptions
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
 # 1. Yahan apna bot token dalein
-BOT_TOKEN = "8648804848:AAEYFlPMz9UFTSQi5pRR6o7A_72kNUrGuMc"
+BOT_TOKEN = "8648804848:AAFSjVxfKhwLxbQUenxB5G2AjUi0RrFT8-U"
 
 # 2. CONFIGURATION: Charo groups ki IDs aur Limits (600 each)
 GROUPS_CONFIG = {
