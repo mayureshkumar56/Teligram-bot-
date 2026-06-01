@@ -2,7 +2,7 @@
 #   CONFIG FILE — Sirf yahan apna BOT_TOKEN paste karo
 # ============================================================
 
-BOT_TOKEN = "8760535655:AAG6GZuzavTT8c5TRIWrsaznqi4F5MlP26g"
+BOT_TOKEN = "8760535655:AAGu9_waJ0VBYWLHZA2OV8ndsvPvdkFm7KI"
 
 # ============================================================
 #   GROUPS CONFIG — Chat IDs aur limits
